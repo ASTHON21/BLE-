@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Outer Radar Ring -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M54,24A30,30 0,1 1,24 54A30,30 0,0 1,54 24M54,28A26,26 0,1 0,80 54A26,26 0,0 0,54 28Z" />
+    <!-- Inner Radar Ring -->
+    <path
+        android:fillColor="#00B8D4"
+        android:pathData="M54,36A18,18 0,1 1,36 54A18,18 0,0 1,54 36M54,39.5A14.5,14.5 0,1 0,68.5 54A14.5,14.5 0,0 0,54 39.5Z" />
+    <!-- Crosshair Axes -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M52.5,20h3v12h-3zM52.5,76h3v12h-3zM20,52.5h12v3h-12zM76,52.5h12v3h-12z" />
+    <!-- Radar Sweep Wedge & Target Lock Core -->
+    <path
+        android:fillColor="#FF6D00"
+        android:pathData="M54,47A7,7 0,1 1,47 54A7,7 0,0 1,54 47Z" />
+    <!-- Probability Particles -->
+    <path
+        android:fillColor="#FFAB00"
+        android:pathData="M65,41A3.5,3.5 0,1 1,61.5 44.5A3.5,3.5 0,0 1,65 41ZM71,48A2.5,2.5 0,1 1,68.5 50.5A2.5,2.5 0,0 1,71 48ZM60,34A2.5,2.5 0,1 1,57.5 36.5A2.5,2.5 0,0 1,60 34Z" />
+</vector>

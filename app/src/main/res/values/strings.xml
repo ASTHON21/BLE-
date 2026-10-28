@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">BLE 粒子寻物雷达</string>
+    <string name="subtitle_engine">L4 多传感器融合 &amp; 蒙特卡洛空间概率粒子定位系统</string>
+    <string name="mode_sandbox">物理仿真沙盒</string>
+    <string name="mode_hardware">真机硬件雷达</string>
+    <string name="tab_scanner">L1-L2 广域声呐台</string>
+    <string name="tab_tracker">L4 粒子坍缩追踪舱</string>
+    <string name="btn_grant_perm">授予蓝牙扫描权限</string>
+    <string name="btn_enable_bt">开启系统蓝牙设置</string>
+    <string name="btn_app_settings">系统应用权限设置</string>
+    <string name="status_stale">等待广播包... (SIGNAL_STALE &gt; 3000ms)</string>
+    <string name="reset_particles">重置 2500 粒子云</string>
+    <string name="geiger_toggle">盖革声光脉冲</string>
+</resources>

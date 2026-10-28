@@ -1,0 +1,6 @@
+{
+  "name": "BLE 粒子寻物雷达",
+  "description": "L4 级多传感器融合与蒙特卡洛空间概率粒子滤波 BLE 寻物雷达系统",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

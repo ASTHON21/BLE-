@@ -1,0 +1,6 @@
+{
+  "summary":  "针对 BLE 空间概率粒子寻物雷达（L4 级多传感器融合定位引擎）的深度全栈审计报告与极限演进升级方案（涵盖算法数学缺陷修复、真零 GC 双缓冲池、双峰对称破缺聚类、人体遮挡方向增益模型、iBeacon/Eddystone 协议深度拆包、双轨时序示波器及 Room 本地校准档案库）。",
+  "updatedAt":  "2026-10-28T01:42:03.251510869Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
