@@ -2,9 +2,8 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "*" ]
   pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
@@ -23,11 +22,15 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Set up Android SDK
+      - name: Set up Android SDK & Accept All Licenses
         uses: android-actions/setup-android@v3
 
-      - name: Decode or generate debug.keystore
+      - name: Accept Android SDK Licenses & Prepare .env and debug.keystore
         run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          if [ ! -f ".env" ]; then
+            cp .env.example .env || touch .env
+          fi
           if [ -f "debug.keystore.base64" ]; then
             base64 -d debug.keystore.base64 > debug.keystore
           elif [ ! -f "debug.keystore" ]; then
@@ -48,11 +51,25 @@ jobs:
           gradle-version: '9.3.1'
 
       - name: Build Debug APK
-        run: gradle :app:assembleDebug --no-daemon
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Rename APK for easy download
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk BLE-Particle-Radar.apk
 
       - name: Upload APK to Actions Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: BLE-Particle-Radar-Debug-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: BLE-Particle-Radar-APK
+          path: BLE-Particle-Radar.apk
           if-no-files-found: error
+
+      - name: Publish APK to GitHub Releases
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: "BLE 粒子寻物雷达 APK (Build #${{ github.run_number }})"
+          body: "自动编译生成的安卓安装包，直接点击下方 **BLE-Particle-Radar.apk** 即可下载安装到手机。"
+          files: BLE-Particle-Radar.apk
+          prerelease: false
