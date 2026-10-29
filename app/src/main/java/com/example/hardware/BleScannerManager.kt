@@ -11,6 +11,7 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.ParcelUuid
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import com.example.engine.BlePacketDissector
@@ -48,11 +49,6 @@ class BleScannerManager(private val context: Context) {
 
   @Volatile private var lastScanStartElapsedMs: Long = 0L
 
-  /**
-   * Permissions requested in the runtime dialog (includes ACTIVITY_RECOGNITION on Android 10+ so
-   * hardware TYPE_STEP_DETECTOR works on real phones, and ACCESS_FINE_LOCATION so Android 12+ does
-   * not filter out iBeacons/AirTags).
-   */
   fun requiredPermissions(): Array<String> {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
       arrayOf(
@@ -71,10 +67,6 @@ class BleScannerManager(private val context: Context) {
     }
   }
 
-  /**
-   * Checks whether core BLE scan permissions are granted (does not fail if optional
-   * ACTIVITY_RECOGNITION is denied, since PdrSensorEngine automatically falls back to accelerometer).
-   */
   fun hasRequiredPermissions(): Boolean {
     return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
       ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) ==
@@ -92,7 +84,7 @@ class BleScannerManager(private val context: Context) {
   fun isBluetoothEnabled(): Boolean {
     return try {
       bluetoothAdapter?.isEnabled == true
-    } catch (_: SecurityException) {
+    } catch (_: Throwable) {
       false
     }
   }
@@ -118,8 +110,8 @@ class BleScannerManager(private val context: Context) {
           leCoded = adapter.isLeCodedPhySupported
           extAdv = adapter.isLeExtendedAdvertisingSupported
         }
-      } catch (_: SecurityException) {
-        // Ignore if restricted by OS
+      } catch (_: Throwable) {
+        // Ignore if restricted by OEM ROM
       }
     }
 
@@ -169,7 +161,7 @@ class BleScannerManager(private val context: Context) {
     val scanner: BluetoothLeScanner? =
       try {
         adapter?.bluetoothLeScanner
-      } catch (_: SecurityException) {
+      } catch (_: Throwable) {
         null
       }
 
@@ -187,7 +179,7 @@ class BleScannerManager(private val context: Context) {
           settingsBuilder.setLegacy(false)
           settingsBuilder.setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED)
         }
-      } catch (_: SecurityException) {
+      } catch (_: Throwable) {
         // Fallback to standard low latency settings
       }
     }
@@ -203,43 +195,61 @@ class BleScannerManager(private val context: Context) {
           results?.forEach { handleResult(it) }
         }
 
+        override fun onScanFailed(errorCode: Int) {
+          // Keep flow alive or allow clean close without crashing
+        }
+
         @SuppressLint("MissingPermission")
         private fun handleResult(result: ScanResult) {
-          val device = result.device ?: return
-          val mac = device.address ?: return
-          val record = result.scanRecord
-          val name =
-            try {
-              record?.deviceName?.takeIf { it.isNotBlank() }
-                ?: device.name?.takeIf { it.isNotBlank() }
-                ?: "BLE-${mac.takeLast(5)}"
-            } catch (_: SecurityException) {
-              record?.deviceName?.takeIf { it.isNotBlank() } ?: "BLE-${mac.takeLast(5)}"
-            }
+          try {
+            val device = result.device ?: return
+            val mac = device.address ?: return
+            val record = result.scanRecord
 
-          val mfgSparse = record?.manufacturerSpecificData
-          val (companyId, vendorName) = SignalFilterEngine.resolveVendor(mfgSparse)
-          val mfgBytes = BlePacketDissector.extractFirstManufacturerBytes(mfgSparse)
+            val mfgSparse = record?.manufacturerSpecificData
+            val serviceUuids = record?.serviceUuids
+            val (companyId, vendorName) =
+              resolveVendorWithServiceFallback(mfgSparse, serviceUuids)
+            val mfgBytes = BlePacketDissector.extractFirstManufacturerBytes(mfgSparse)
 
-          val rawTxPower =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-              result.txPower
-            } else {
-              record?.txPowerLevel ?: SignalFilterEngine.TX_POWER_NOT_PRESENT
-            }
+            val rawName =
+              try {
+                record?.deviceName?.takeIf { it.isNotBlank() }
+                  ?: device.name?.takeIf { it.isNotBlank() }
+              } catch (_: Throwable) {
+                record?.deviceName?.takeIf { it.isNotBlank() }
+              }
 
-          trySend(
-            RawBleAdvertisement(
-              macAddress = mac,
-              deviceName = name,
-              manufacturerId = companyId,
-              vendorName = vendorName,
-              manufacturerBytes = mfgBytes,
-              rawRssi = result.rssi,
-              rawTxPower = rawTxPower,
-              timestampMs = System.currentTimeMillis(),
+            val friendlyName =
+              rawName
+                ?: if (vendorName != "Generic BLE") {
+                  "$vendorName 信标 [${mac.takeLast(5)}]"
+                } else {
+                  "BLE 信标 [${mac.takeLast(5)}]"
+                }
+
+            val rawTxPower =
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                result.txPower
+              } else {
+                record?.txPowerLevel ?: SignalFilterEngine.TX_POWER_NOT_PRESENT
+              }
+
+            trySend(
+              RawBleAdvertisement(
+                macAddress = mac,
+                deviceName = friendlyName,
+                manufacturerId = companyId,
+                vendorName = vendorName,
+                manufacturerBytes = mfgBytes,
+                rawRssi = result.rssi,
+                rawTxPower = rawTxPower,
+                timestampMs = System.currentTimeMillis(),
+              )
             )
-          )
+          } catch (_: Throwable) {
+            // Never crash on malformed real-world BLE advertisement packets
+          }
         }
       }
 
@@ -248,9 +258,7 @@ class BleScannerManager(private val context: Context) {
       lastScanStartElapsedMs = SystemClock.elapsedRealtime()
       scanner.startScan(null, settingsBuilder.build(), scanCallback)
       started = true
-    } catch (_: SecurityException) {
-      started = false
-    } catch (_: IllegalStateException) {
+    } catch (_: Throwable) {
       started = false
     }
 
@@ -258,12 +266,36 @@ class BleScannerManager(private val context: Context) {
       if (started) {
         try {
           scanner.stopScan(scanCallback)
-        } catch (_: SecurityException) {
+        } catch (_: Throwable) {
           // Ignore when Bluetooth or permission is revoked mid-scan
-        } catch (_: IllegalStateException) {
-          // Ignore when adapter turns off mid-scan
         }
       }
     }
+  }
+
+  private fun resolveVendorWithServiceFallback(
+    mfgSparse: android.util.SparseArray<ByteArray>?,
+    serviceUuids: List<ParcelUuid>?,
+  ): Pair<Int?, String> {
+    val (companyId, vendorName) = SignalFilterEngine.resolveVendor(mfgSparse)
+    if (companyId != null) return companyId to vendorName
+
+    if (!serviceUuids.isNullOrEmpty()) {
+      for (parcelUuid in serviceUuids) {
+        val uuidStr = parcelUuid.uuid.toString().lowercase()
+        when {
+          uuidStr.startsWith("0000fe95") -> return 0x038F to "Xiaomi"
+          uuidStr.startsWith("0000feaa") || uuidStr.startsWith("0000fe2c") ->
+            return 0x00E0 to "Google"
+          uuidStr.startsWith("0000fd5a") || uuidStr.startsWith("0000fd59") ->
+            return 0x0075 to "Samsung"
+          uuidStr.startsWith("0000fd6f") -> return 0x004C to "Apple/Google EN"
+          uuidStr.startsWith("00001812") -> return null to "BLE HID 键鼠/触控笔"
+          uuidStr.startsWith("0000180d") -> return null to "BLE 心率手环"
+          uuidStr.startsWith("0000180f") -> return null to "BLE 电池外设"
+        }
+      }
+    }
+    return null to "Generic BLE"
   }
 }

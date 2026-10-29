@@ -5,8 +5,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,7 +17,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -78,10 +75,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.hardware.GeigerFeedbackController
 import com.example.model.BleDeviceTelemetry
-import com.example.model.NlosScenarioPreset
 import com.example.model.ParticleSnapshot
 import com.example.model.PdrState
-import com.example.model.WallObstacle
 import com.example.ui.theme.RadarAmber
 import com.example.ui.theme.RadarBgCard
 import com.example.ui.theme.RadarBgDeep
@@ -96,7 +91,6 @@ import com.example.ui.theme.RadarTextPrimary
 import com.example.ui.theme.RadarTextSecondary
 import kotlin.math.PI
 import kotlin.math.cos
-import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlinx.coroutines.delay
@@ -104,9 +98,6 @@ import kotlinx.coroutines.isActive
 
 @Composable
 fun TrackerScreen(
-  isSandboxMode: Boolean,
-  nlosPreset: NlosScenarioPreset,
-  obstacles: List<WallObstacle>,
   bodyShadowingEnabled: Boolean,
   lockedDevice: BleDeviceTelemetry?,
   pdrState: PdrState,
@@ -114,7 +105,6 @@ fun TrackerScreen(
   defaultTxPower: Int,
   basePathLossN: Float,
   geigerEnabled: Boolean,
-  onSelectNlosPreset: (NlosScenarioPreset) -> Unit,
   onToggleBodyShadowing: (Boolean) -> Unit,
   onStepDirection: (dx: Float, dy: Float) -> Unit,
   onRotateHeading: (deltaDegrees: Float) -> Unit,
@@ -186,52 +176,16 @@ fun TrackerScreen(
       }
     }
 
-    // 2. Sandbox NLOS Obstacle Scenario Strip
-    if (isSandboxMode) {
-      Row(
-        modifier =
-          Modifier.fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(bottom = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        for (preset in NlosScenarioPreset.entries) {
-          val selected = preset == nlosPreset
-          Surface(
-            modifier =
-              Modifier.clip(RoundedCornerShape(8.dp))
-                .clickable { onSelectNlosPreset(preset) }
-                .testTag("nlos_preset_${preset.name}"),
-            color = if (selected) RadarPurple.copy(alpha = 0.24f) else RadarBgCard,
-            border =
-              BorderStroke(
-                1.dp,
-                if (selected) RadarPurple else RadarBorder,
-              ),
-          ) {
-            Text(
-              text = preset.title,
-              style = MaterialTheme.typography.labelSmall,
-              color = if (selected) RadarTextPrimary else RadarTextSecondary,
-              modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-            )
-          }
-        }
-      }
-    }
-
-    // 3. Top L4+ Target Convergence & Bimodal Advisor HUD
+    // 2. Top L4+ Target Convergence & Bimodal Advisor HUD
     ConvergenceHudCard(
       lockedDevice = lockedDevice,
       pdrState = pdrState,
       snapshot = particleSnapshot,
-      isSandboxMode = isSandboxMode,
     )
 
     Spacer(modifier = Modifier.height(6.dp))
 
-    // 4. Core 60fps 2D Spatial Particle Radar Canvas (2500 SoA Zero-GC Particles)
+    // 3. Core 60fps 2D Spatial Particle Radar Canvas (2500 SoA Zero-GC Particles)
     Box(
       modifier =
         Modifier.fillMaxWidth()
@@ -244,9 +198,6 @@ fun TrackerScreen(
       val renderVersion = particleSnapshot.version
       SpatialParticleRadarCanvas(
         renderVersion = renderVersion,
-        isSandboxMode = isSandboxMode,
-        obstacles = obstacles,
-        lockedDevice = lockedDevice,
         pdrState = pdrState,
         snapshot = particleSnapshot,
       )
@@ -271,13 +222,6 @@ fun TrackerScreen(
             color = RadarPurple,
             text =
               "镜像幽灵次峰 (${particleSnapshot.ghostTargetX.format1()}m, ${particleSnapshot.ghostTargetY.format1()}m)",
-          )
-        }
-        if (isSandboxMode && lockedDevice != null) {
-          LegendRow(
-            color = RadarEmerald,
-            text =
-              "真实隐藏靶标 (${lockedDevice.simTrueX.format1()}m, ${lockedDevice.simTrueY.format1()}m)",
           )
         }
         LegendRow(
@@ -344,9 +288,8 @@ fun TrackerScreen(
 
     Spacer(modifier = Modifier.height(6.dp))
 
-    // 5. Bottom Collapsible Control Pod
+    // 4. Bottom Collapsible Control Pod
     BottomControlPod(
-      pdrState = pdrState,
       geigerEnabled = geigerEnabled,
       bodyShadowingEnabled = bodyShadowingEnabled,
       defaultTxPower = defaultTxPower,
@@ -384,7 +327,6 @@ private fun ConvergenceHudCard(
   lockedDevice: BleDeviceTelemetry?,
   pdrState: PdrState,
   snapshot: ParticleSnapshot,
-  isSandboxMode: Boolean,
 ) {
   Card(
     modifier = Modifier.fillMaxWidth(),
@@ -408,13 +350,10 @@ private fun ConvergenceHudCard(
           Text(
             text =
               lockedDevice?.let {
-                val nlosTag =
-                  if (it.isNlosOccluded) " | NLOS穿墙 -${it.wallLossDb.format1()}dB" else ""
-                "MAC: ${it.macAddress} | 平滑: ${it.smoothedRssi.format1()} dBm$nlosTag"
+                "MAC: ${it.macAddress} | 平滑: ${it.smoothedRssi.format1()} dBm"
               } ?: "请先从声呐台选择信标",
             style = MaterialTheme.typography.labelSmall,
-            color =
-              if (lockedDevice?.isNlosOccluded == true) RadarPurple else RadarTextSecondary,
+            color = RadarTextSecondary,
           )
         }
 
@@ -462,24 +401,11 @@ private fun ConvergenceHudCard(
           value = "${headingDeg.format1()}°",
           color = RadarEmerald,
         )
-        if (isSandboxMode && lockedDevice != null) {
-          val errM =
-            hypot(
-              snapshot.estTargetX - lockedDevice.simTrueX,
-              snapshot.estTargetY - lockedDevice.simTrueY,
-            )
-          HudMetricItem(
-            label = "主峰真值误差",
-            value = "${errM.format2()} m",
-            color = if (errM < 1.0f) RadarEmerald else RadarAmber,
-          )
-        } else {
-          HudMetricItem(
-            label = "有效 TxPower",
-            value = "${lockedDevice?.effectiveTxPower ?: -59} dBm",
-            color = RadarTextPrimary,
-          )
-        }
+        HudMetricItem(
+          label = "有效 TxPower",
+          value = "${lockedDevice?.effectiveTxPower ?: -59} dBm",
+          color = RadarTextPrimary,
+        )
       }
     }
   }
@@ -501,9 +427,6 @@ private fun HudMetricItem(label: String, value: String, color: Color) {
 @Composable
 private fun SpatialParticleRadarCanvas(
   renderVersion: Long,
-  isSandboxMode: Boolean,
-  obstacles: List<WallObstacle>,
-  lockedDevice: BleDeviceTelemetry?,
   pdrState: PdrState,
   snapshot: ParticleSnapshot,
 ) {
@@ -584,31 +507,7 @@ private fun SpatialParticleRadarCanvas(
       }
     }
 
-    // 2. Draw NLOS Indoor Wall Obstacles in Sandbox Mode
-    if (isSandboxMode && obstacles.isNotEmpty()) {
-      for (wall in obstacles) {
-        val wx1 = worldToScreenX(wall.x1)
-        val wy1 = worldToScreenY(wall.y1)
-        val wx2 = worldToScreenX(wall.x2)
-        val wy2 = worldToScreenY(wall.y2)
-        drawLine(
-          color = RadarPurple.copy(alpha = 0.30f),
-          start = Offset(wx1, wy1),
-          end = Offset(wx2, wy2),
-          strokeWidth = 10.dp.toPx(),
-          cap = StrokeCap.Round,
-        )
-        drawLine(
-          color = RadarPurple,
-          start = Offset(wx1, wy1),
-          end = Offset(wx2, wy2),
-          strokeWidth = 3.dp.toPx(),
-          cap = StrokeCap.Round,
-        )
-      }
-    }
-
-    // 3. Draw all 2500 Probability Particles (Zero-GC SoA arrays)
+    // 2. Draw all 2500 Probability Particles (Zero-GC SoA arrays)
     val n = snapshot.count
     val pxArr = snapshot.px
     val pyArr = snapshot.py
@@ -642,7 +541,7 @@ private fun SpatialParticleRadarCanvas(
       )
     }
 
-    // 4. Draw Secondary Mirror Ghost Peak Crosshair when Bimodal Ambiguity Exists
+    // 3. Draw Secondary Mirror Ghost Peak Crosshair when Bimodal Ambiguity Exists
     if (snapshot.hasBimodalAmbiguity) {
       val gx = worldToScreenX(snapshot.ghostTargetX)
       val gy = worldToScreenY(snapshot.ghostTargetY)
@@ -660,29 +559,7 @@ private fun SpatialParticleRadarCanvas(
       )
     }
 
-    // 5. Draw True Hidden Beacon Bullseye in Sandbox Mode
-    if (isSandboxMode && lockedDevice != null) {
-      val tx = worldToScreenX(lockedDevice.simTrueX)
-      val ty = worldToScreenY(lockedDevice.simTrueY)
-      drawCircle(
-        color = RadarEmerald.copy(alpha = 0.25f),
-        radius = 15.dp.toPx(),
-        center = Offset(tx, ty),
-      )
-      drawCircle(
-        color = RadarEmerald.copy(alpha = 0.85f),
-        radius = 9.5.dp.toPx(),
-        center = Offset(tx, ty),
-        style = Stroke(width = 1.8.dp.toPx(), pathEffect = dashPathEffect),
-      )
-      drawCircle(
-        color = RadarEmerald,
-        radius = 3.5.dp.toPx(),
-        center = Offset(tx, ty),
-      )
-    }
-
-    // 6. Draw User Walking Trajectory Polyline
+    // 4. Draw User Walking Trajectory Polyline
     val trail = pdrState.trajectory
     if (trail.size >= 2) {
       for (idx in 0 until trail.size - 1) {
@@ -698,7 +575,7 @@ private fun SpatialParticleRadarCanvas(
       }
     }
 
-    // 7. Draw User Current Position, FOV Cone & Orthogonal Step Guide Vector
+    // 5. Draw User Current Position, FOV Cone & Orthogonal Step Guide Vector
     val ux = worldToScreenX(pdrState.userX)
     val uy = worldToScreenY(pdrState.userY)
 
@@ -743,7 +620,7 @@ private fun SpatialParticleRadarCanvas(
     drawCircle(color = Color.White, radius = 5.8.dp.toPx(), center = Offset(ux, uy))
     drawCircle(color = RadarCyan, radius = 4.dp.toPx(), center = Offset(ux, uy))
 
-    // 8. Draw Primary Mode Target Lock Crosshair
+    // 6. Draw Primary Mode Target Lock Crosshair
     val estX = worldToScreenX(snapshot.estTargetX)
     val estY = worldToScreenY(snapshot.estTargetY)
     val crossRadius = 13.dp.toPx()
@@ -784,7 +661,6 @@ private fun SpatialParticleRadarCanvas(
 
 @Composable
 private fun BottomControlPod(
-  pdrState: PdrState,
   geigerEnabled: Boolean,
   bodyShadowingEnabled: Boolean,
   defaultTxPower: Int,
@@ -812,10 +688,10 @@ private fun BottomControlPod(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        // Left: Virtual D-Pad Step + In-Place 360 Rotation Controller
+        // Left: Manual Step / Azimuth Calibration Assist Controller
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
           Text(
-            text = "虚拟步进与原地转向",
+            text = "辅助步进与朝向微调",
             style = MaterialTheme.typography.labelSmall,
             color = RadarCyan,
           )

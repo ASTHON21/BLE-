@@ -2,9 +2,7 @@ package com.example
 
 import com.example.engine.BlePacketDissector
 import com.example.engine.MonteCarloParticleEngine
-import com.example.engine.NlosSandboxSimulator
 import com.example.engine.SignalFilterEngine
-import com.example.model.NlosScenarioPreset
 import kotlin.math.abs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
@@ -78,16 +76,6 @@ class ExampleUnitTest {
     assertTrue(snap3.estTargetY.isFinite())
     assertTrue(snap3.ghostTargetX.isFinite())
     assertTrue(abs(snap3.pw.sum() - 1.0f) < 1e-3f)
-  }
-
-  @Test
-  fun nlosSimulator_computesWallIntersectionLoss() {
-    val walls = NlosSandboxSimulator.getObstaclesForPreset(NlosScenarioPreset.SINGLE_WALL)
-    // Wall is at y = -0.8f from x = -4.8f to +4.8f
-    val occludedLoss = NlosSandboxSimulator.computeWallAttenuationDb(0f, 0f, 3.5f, -2.8f, walls)
-    val clearLoss = NlosSandboxSimulator.computeWallAttenuationDb(0f, 0f, 0f, 3.0f, walls)
-    assertEquals(6.5f, occludedLoss, 0.01f)
-    assertEquals(0f, clearLoss, 0.01f)
   }
 
   @Test

@@ -9,26 +9,20 @@ import com.example.data.RadarHuntSessionEntity
 import com.example.data.RadarRepository
 import com.example.engine.BlePacketDissector
 import com.example.engine.MonteCarloParticleEngine
-import com.example.engine.NlosSandboxSimulator
 import com.example.engine.SignalFilterEngine
 import com.example.hardware.BleScannerManager
 import com.example.hardware.PdrSensorEngine
 import com.example.hardware.RawBleAdvertisement
 import com.example.model.BleDeviceTelemetry
 import com.example.model.HardwareCapabilities
-import com.example.model.NlosScenarioPreset
 import com.example.model.OscilloscopeTrace
 import com.example.model.ParticleSnapshot
 import com.example.model.PdrState
-import com.example.model.WallObstacle
-import java.util.Random
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
-import kotlin.math.log10
-import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -37,6 +31,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -93,18 +88,6 @@ class RadarViewModel(application: Application) : AndroidViewModel(application) {
   private val _activeTab = MutableStateFlow(RadarTab.SCANNER)
   val activeTab: StateFlow<RadarTab> = _activeTab.asStateFlow()
 
-  private val _isSandboxMode = MutableStateFlow(true)
-  val isSandboxMode: StateFlow<Boolean> = _isSandboxMode.asStateFlow()
-
-  private val _nlosPreset = MutableStateFlow(NlosScenarioPreset.SINGLE_WALL)
-  val nlosPreset: StateFlow<NlosScenarioPreset> = _nlosPreset.asStateFlow()
-
-  private val _obstacles =
-    MutableStateFlow(
-      NlosSandboxSimulator.getObstaclesForPreset(NlosScenarioPreset.SINGLE_WALL)
-    )
-  val obstacles: StateFlow<List<WallObstacle>> = _obstacles.asStateFlow()
-
   private val _bodyShadowingEnabled = MutableStateFlow(true)
   val bodyShadowingEnabled: StateFlow<Boolean> = _bodyShadowingEnabled.asStateFlow()
 
@@ -139,68 +122,8 @@ class RadarViewModel(application: Application) : AndroidViewModel(application) {
   val particleSnapshot: StateFlow<ParticleSnapshot> = _particleSnapshot.asStateFlow()
 
   private val deviceMap = ConcurrentHashMap<String, BleDeviceTelemetry>()
-  private var hardwareScanJob: Job? = null
-  private var sandboxSimJob: Job? = null
-  private val simRng = Random(2026L)
-
-  private data class VirtualBeaconSpec(
-    val macAddress: String,
-    val deviceName: String,
-    val companyId: Int,
-    val rawTxPower: Int,
-    val truePathLossN: Float,
-    var trueX: Float,
-    var trueY: Float,
-  )
-
-  private val sandboxBeacons =
-    mutableListOf(
-      VirtualBeaconSpec(
-        macAddress = "F4:0F:24:8A:91:01",
-        deviceName = "AirTag Pro [目标信标]",
-        companyId = 0x004C, // Apple
-        rawTxPower = -59,
-        truePathLossN = 2.35f,
-        trueX = 3.5f,
-        trueY = -2.8f,
-      ),
-      VirtualBeaconSpec(
-        macAddress = "68:AB:BC:3E:19:02",
-        deviceName = "Xiaomi Tag Ultra",
-        companyId = 0x038F, // Xiaomi
-        rawTxPower = 127, // Exercises Contract 1.3 TX_POWER_NOT_PRESENT (127) fallback!
-        truePathLossN = 2.50f,
-        trueX = -2.6f,
-        trueY = 3.1f,
-      ),
-      VirtualBeaconSpec(
-        macAddress = "D0:03:DF:77:4C:03",
-        deviceName = "Galaxy SmartTag2",
-        companyId = 0x0075, // Samsung
-        rawTxPower = -57,
-        truePathLossN = 2.40f,
-        trueX = 4.1f,
-        trueY = 2.4f,
-      ),
-      VirtualBeaconSpec(
-        macAddress = "3C:28:6D:52:B0:04",
-        deviceName = "Pixel Finder Tag",
-        companyId = 0x00E0, // Google
-        rawTxPower = -61,
-        truePathLossN = 2.60f,
-        trueX = -3.4f,
-        trueY = -2.2f,
-      ),
-      VirtualBeaconSpec(
-        macAddress = "94:DB:56:11:E8:05",
-        deviceName = "Sony WF-1000XM5 Case",
-        companyId = 0x012D, // Sony
-        rawTxPower = -60,
-        truePathLossN = 2.45f,
-        trueX = 1.6f,
-        trueY = 4.6f,
-      ),
-    )
+  @Volatile private var hardwareScanJob: Job? = null
+  private val streamLock = Any()
 
   init {
     viewModelScope.launch {
@@ -212,39 +135,53 @@ class RadarViewModel(application: Application) : AndroidViewModel(application) {
     pdrSensorEngine.start()
     refreshHardwareCapabilities()
     startStalenessWatchdog()
-    restartActiveDataStream()
   }
 
   fun requiredPermissions(): Array<String> = bleScannerManager.requiredPermissions()
 
-  fun refreshHardwareCapabilities() {
+  /**
+   * Pure capability query that updates _hardwareCapabilities StateFlow WITHOUT recursive stream restarts.
+   */
+  private fun queryAndPublishCapabilities(): HardwareCapabilities {
     val caps =
       bleScannerManager.queryCapabilities(
         stepTier = pdrSensorEngine.stepSensorTierName,
         orientationTier = pdrSensorEngine.orientationSensorTierName,
       )
     _hardwareCapabilities.value = caps
-    if (!_isSandboxMode.value && caps.hasScanPermission && caps.isBluetoothEnabled) {
-      if (hardwareScanJob == null || hardwareScanJob?.isActive != true) {
-        restartActiveDataStream()
+    return caps
+  }
+
+  /**
+   * Public capability refresh entry point: updates capabilities and starts hardware scan if needed
+   * without any recursive loop.
+   */
+  fun refreshHardwareCapabilities() {
+    val caps = queryAndPublishCapabilities()
+    if (caps.hasScanPermission && caps.isBluetoothEnabled) {
+      synchronized(streamLock) {
+        if (hardwareScanJob?.isActive != true) {
+          startHardwareBleScanLocked(caps)
+        }
       }
     }
   }
 
-  fun setSandboxMode(enabled: Boolean) {
-    if (_isSandboxMode.value == enabled) return
-    _isSandboxMode.value = enabled
+  /**
+   * Clears cached telemetry & filter buffers and restarts real BLE scanning.
+   */
+  fun clearAndRescanDevices() {
     deviceMap.clear()
     signalFilterEngine.clear()
+    _lockedMac.value = null
     _devices.value = emptyList()
     _oscilloscopeTrace.value = OscilloscopeTrace()
-    refreshHardwareCapabilities()
-    restartActiveDataStream()
-  }
-
-  fun selectNlosPreset(preset: NlosScenarioPreset) {
-    _nlosPreset.value = preset
-    _obstacles.value = NlosSandboxSimulator.getObstaclesForPreset(preset)
+    synchronized(streamLock) {
+      hardwareScanJob?.cancel()
+      hardwareScanJob = null
+      val caps = queryAndPublishCapabilities()
+      startHardwareBleScanLocked(caps)
+    }
   }
 
   fun setBodyShadowingEnabled(enabled: Boolean) {
@@ -257,7 +194,6 @@ class RadarViewModel(application: Application) : AndroidViewModel(application) {
 
   fun lockOnDevice(macAddress: String) {
     _lockedMac.value = macAddress
-    // Apply calibrated profile if present
     calibrationCache[macAddress]?.let { cal ->
       _defaultTxPower.value = cal.calibratedTxPower
       _basePathLossN.value = cal.calibratedPathLossN
@@ -313,20 +249,6 @@ class RadarViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
-  fun randomizeSandboxTargetPositions() {
-    if (!_isSandboxMode.value) return
-    sandboxBeacons.forEachIndexed { idx, beacon ->
-      val angle = (idx * (2.0 * PI / sandboxBeacons.size)) + simRng.nextDouble() * 0.9
-      val radius = 2.4f + simRng.nextFloat() * 3.6f
-      beacon.trueX = (radius * cos(angle)).toFloat()
-      beacon.trueY = (radius * sin(angle)).toFloat()
-    }
-    resetParticleCloud()
-  }
-
-  /**
-   * Contract 2.2 Priority C: Manual & Sandbox Virtual D-Pad Stepping.
-   */
   fun stepVirtualDirection(dxNormalized: Float, dyNormalized: Float) {
     val stepLen = _pdrState.value.stepLengthM
     val norm = hypot(dxNormalized, dyNormalized).coerceAtLeast(1e-4f)
@@ -339,10 +261,6 @@ class RadarViewModel(application: Application) : AndroidViewModel(application) {
     applyUserDisplacement(dx = dx, dy = dy, measuredStepLength = stepLen)
   }
 
-  /**
-   * L4+ In-Place 360-degree Body Rotation: Allows user to rotate heading in place to break
-   * symmetry via the 2.4GHz Human Body Torso Shadowing model even without taking a step.
-   */
   fun rotateVirtualHeading(deltaDegrees: Float) {
     val currentRad = _pdrState.value.azimuthRad
     val nextRad = currentRad + Math.toRadians(deltaDegrees.toDouble()).toFloat()
@@ -414,8 +332,6 @@ class RadarViewModel(application: Application) : AndroidViewModel(application) {
     val locked = _lockedMac.value?.let { deviceMap[it] } ?: _devices.value.firstOrNull() ?: return
     val snap = _particleSnapshot.value
     val pdr = _pdrState.value
-    val presetName =
-      if (_isSandboxMode.value) _nlosPreset.value.title else "真机 BLE 2.4GHz 实测"
     val session =
       RadarHuntSessionEntity(
         macAddress = locked.macAddress,
@@ -427,7 +343,7 @@ class RadarViewModel(application: Application) : AndroidViewModel(application) {
         confidencePct = snap.confidencePct,
         stepsTaken = pdr.stepCount,
         resampleCount = snap.resampleCount,
-        obstaclePresetName = presetName,
+        obstaclePresetName = "真机 BLE 2.4GHz 实测",
         timestampMs = System.currentTimeMillis(),
       )
     viewModelScope.launch(Dispatchers.IO) { repository.recordHuntSession(session) }
@@ -441,138 +357,38 @@ class RadarViewModel(application: Application) : AndroidViewModel(application) {
     viewModelScope.launch(Dispatchers.IO) { repository.clearHuntSessions() }
   }
 
-  private fun restartActiveDataStream() {
-    hardwareScanJob?.cancel()
-    sandboxSimJob?.cancel()
-
-    if (_isSandboxMode.value) {
-      startSandboxSimulation()
-    } else {
-      startHardwareBleScan()
-    }
-  }
-
-  private fun startSandboxSimulation() {
-    if (_lockedMac.value == null && sandboxBeacons.isNotEmpty()) {
-      _lockedMac.value = sandboxBeacons.first().macAddress
-    }
-    sandboxSimJob =
-      viewModelScope.launch(Dispatchers.Default) {
-        while (isActive && _isSandboxMode.value) {
-          val nowMs = System.currentTimeMillis()
-          val pdr = _pdrState.value
-          val activeWalls = _obstacles.value
-          val useBodyShadow = _bodyShadowingEnabled.value
-          val headingSin = sin(pdr.azimuthRad)
-          val headingCos = cos(pdr.azimuthRad)
-
-          for (beacon in sandboxBeacons) {
-            val dx = beacon.trueX - pdr.userX
-            val dy = beacon.trueY - pdr.userY
-            val trueDist = hypot(dx, dy).coerceAtLeast(0.15f)
-            val trueEffectiveTx =
-              SignalFilterEngine.resolveEffectiveTxPower(beacon.rawTxPower, _defaultTxPower.value)
-
-            // 1. NLOS Wall Intersection Attenuation
-            val wallLossDb =
-              NlosSandboxSimulator.computeWallAttenuationDb(
-                ux = pdr.userX,
-                uy = pdr.userY,
-                bx = beacon.trueX,
-                by = beacon.trueY,
-                obstacles = activeWalls,
-              )
-
-            // 2. Human Body Torso Shadowing Directional Loss
-            val bodyShadowDb =
-              if (useBodyShadow) {
-                val cosDelta = (dx * headingSin + dy * headingCos) / trueDist
-                MonteCarloParticleEngine.BODY_SHADOW_MAX_DB *
-                  0.5f *
-                  (1f - cosDelta.coerceIn(-1f, 1f))
-              } else {
-                0f
-              }
-
-            val idealRssi =
-              trueEffectiveTx.toFloat() -
-                10f * beacon.truePathLossN * log10(trueDist) -
-                wallLossDb -
-                bodyShadowDb
-
-            // Multipath Gaussian noise + 8% chance of deep multipath spike (to test Hampel filter)
-            val gaussianNoise = simRng.nextGaussian().toFloat() * 2.0f
-            val multipathSpike =
-              if (simRng.nextFloat() < 0.08f) {
-                if (simRng.nextBoolean()) -13.5f else 11.0f
-              } else {
-                0f
-              }
-
-            val simulatedRawRssi =
-              (idealRssi + gaussianNoise + multipathSpike).roundToInt().coerceIn(-105, -22)
-
-            val angleToBeacon = atan2(dx, dy)
-
-            ingestAdvertisement(
-              ad =
-                RawBleAdvertisement(
-                  macAddress = beacon.macAddress,
-                  deviceName = beacon.deviceName,
-                  manufacturerId = beacon.companyId,
-                  vendorName = SignalFilterEngine.resolveVendorById(beacon.companyId),
-                  manufacturerBytes = null,
-                  rawRssi = simulatedRawRssi,
-                  rawTxPower = beacon.rawTxPower,
-                  timestampMs = nowMs,
-                ),
-              isSimulated = true,
-              simTrueX = beacon.trueX,
-              simTrueY = beacon.trueY,
-              sonarAngleRad = angleToBeacon,
-              isNlosOccluded = wallLossDb > 0f,
-              wallLossDb = wallLossDb,
-            )
-          }
-
-          publishSortedDevices(nowMs)
-          delay(200L) // 5Hz telemetry stream
-        }
-      }
-  }
-
-  private fun startHardwareBleScan() {
-    refreshHardwareCapabilities()
-    val caps = _hardwareCapabilities.value
+  /**
+   * Starts the single hardware BLE scan coroutine WITHOUT calling refreshHardwareCapabilities(),
+   * eliminating the StackOverflowError recursion cycle.
+   */
+  private fun startHardwareBleScanLocked(caps: HardwareCapabilities) {
     if (!caps.hasScanPermission || !caps.isBluetoothEnabled) return
+    if (hardwareScanJob?.isActive == true) return
 
     hardwareScanJob =
       viewModelScope.launch(Dispatchers.Default) {
-        bleScannerManager.scanBleFlow().collect { rawAd ->
-          val stableHashAngle =
-            ((rawAd.macAddress.hashCode() and 0x7FFFFFFF) % 360) * (PI.toFloat() / 180f)
-          ingestAdvertisement(
-            ad = rawAd,
-            isSimulated = false,
-            simTrueX = 0f,
-            simTrueY = 0f,
-            sonarAngleRad = stableHashAngle,
-            isNlosOccluded = false,
-            wallLossDb = 0f,
-          )
-          publishSortedDevices(rawAd.timestampMs)
-        }
+        bleScannerManager
+          .scanBleFlow()
+          .catch {
+            // Gracefully handle any OEM Bluetooth stack flow errors
+          }
+          .collect { rawAd ->
+            val stableHashAngle =
+              ((rawAd.macAddress.hashCode() and 0x7FFFFFFF) % 360) * (PI.toFloat() / 180f)
+            ingestAdvertisement(
+              ad = rawAd,
+              sonarAngleRad = stableHashAngle,
+            )
+            publishSortedDevices(rawAd.timestampMs)
+          }
+        // If flow closes (e.g., Bluetooth toggled), wait before allowing watchdog to re-check
+        delay(2000L)
       }
   }
 
   private fun ingestAdvertisement(
     ad: RawBleAdvertisement,
-    isSimulated: Boolean,
-    simTrueX: Float,
-    simTrueY: Float,
     sonarAngleRad: Float,
-    isNlosOccluded: Boolean,
-    wallLossDb: Float,
   ) {
     val filterOut =
       signalFilterEngine.processRssi(
@@ -586,7 +402,6 @@ class RadarViewModel(application: Application) : AndroidViewModel(application) {
     val pathLossN = calProfile?.calibratedPathLossN ?: _basePathLossN.value
     val resolvedName = calProfile?.customAlias ?: ad.deviceName
 
-    // Contract 1.3: Never allow 127 (TX_POWER_NOT_PRESENT) or out-of-bounds TxPower into distance math
     val effectiveTx =
       SignalFilterEngine.resolveEffectiveTxPower(
         rawTxPower = ad.rawTxPower,
@@ -624,12 +439,7 @@ class RadarViewModel(application: Application) : AndroidViewModel(application) {
         packetIntervalMs = filterOut.packetIntervalMs,
         lastSeenMs = ad.timestampMs,
         isSignalStale = false,
-        isSimulated = isSimulated,
-        simTrueX = simTrueX,
-        simTrueY = simTrueY,
         sonarAngleRad = sonarAngleRad,
-        isNlosOccluded = isNlosOccluded,
-        wallLossDb = wallLossDb,
         dissectedProtocol = dissected,
       )
 
@@ -687,7 +497,7 @@ class RadarViewModel(application: Application) : AndroidViewModel(application) {
           publishSortedDevices(nowMs)
         }
         refreshHardwareCapabilities()
-        delay(300L)
+        delay(500L)
       }
     }
   }
@@ -695,7 +505,8 @@ class RadarViewModel(application: Application) : AndroidViewModel(application) {
   override fun onCleared() {
     super.onCleared()
     pdrSensorEngine.stop()
-    hardwareScanJob?.cancel()
-    sandboxSimJob?.cancel()
+    synchronized(streamLock) {
+      hardwareScanJob?.cancel()
+    }
   }
 }

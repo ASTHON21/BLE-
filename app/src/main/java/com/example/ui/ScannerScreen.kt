@@ -81,7 +81,6 @@ import com.example.ui.theme.RadarCyan
 import com.example.ui.theme.RadarCyanDim
 import com.example.ui.theme.RadarEmerald
 import com.example.ui.theme.RadarOrange
-import com.example.ui.theme.RadarPurple
 import com.example.ui.theme.RadarTextPrimary
 import com.example.ui.theme.RadarTextSecondary
 import java.util.Locale
@@ -92,14 +91,13 @@ import kotlin.math.sin
 
 @Composable
 fun ScannerScreen(
-  isSandboxMode: Boolean,
   capabilities: HardwareCapabilities,
   devices: List<BleDeviceTelemetry>,
   lockedMac: String?,
   oscilloscopeTrace: OscilloscopeTrace,
   onRequestPermissions: () -> Unit,
   onLockDevice: (String) -> Unit,
-  onRandomizeSandbox: () -> Unit,
+  onClearAndRescan: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
@@ -109,14 +107,13 @@ fun ScannerScreen(
     // 1. Hardware PHY Capability Badges Bar
     HardwareCapabilityStrip(
       capabilities = capabilities,
-      isSandboxMode = isSandboxMode,
-      onRandomizeSandbox = onRandomizeSandbox,
+      onClearAndRescan = onClearAndRescan,
     )
 
     Spacer(modifier = Modifier.height(6.dp))
 
-    // 2. Contract 1.1: Permission & Bluetooth Hardware Guard Card when in Hardware Mode
-    if (!isSandboxMode && (!capabilities.hasScanPermission || !capabilities.isBluetoothEnabled)) {
+    // 2. Contract 1.1: Permission & Bluetooth Hardware Guard Card
+    if (!capabilities.hasScanPermission || !capabilities.isBluetoothEnabled) {
       HardwareGuardCard(
         hasPermission = capabilities.hasScanPermission,
         isBluetoothEnabled = capabilities.isBluetoothEnabled,
@@ -144,7 +141,6 @@ fun ScannerScreen(
     LogarithmicSonarCard(
       devices = devices,
       lockedMac = lockedMac,
-      isSandboxMode = isSandboxMode,
     )
 
     Spacer(modifier = Modifier.height(6.dp))
@@ -206,9 +202,7 @@ fun ScannerScreen(
           )
           Spacer(modifier = Modifier.height(8.dp))
           Text(
-            text =
-              if (isSandboxMode) "正在初始化 5Hz 物理仿真信标..."
-              else "正在监听 2.4GHz BLE 广播信道 (LOW_LATENCY)...",
+            text = "正在监听 2.4GHz BLE 广播信道 (SCAN_MODE_LOW_LATENCY)...",
             style = MaterialTheme.typography.bodyMedium,
             color = RadarTextSecondary,
           )
@@ -235,8 +229,7 @@ fun ScannerScreen(
 @Composable
 private fun HardwareCapabilityStrip(
   capabilities: HardwareCapabilities,
-  isSandboxMode: Boolean,
-  onRandomizeSandbox: () -> Unit,
+  onClearAndRescan: () -> Unit,
 ) {
   Row(
     modifier =
@@ -262,32 +255,30 @@ private fun HardwareCapabilityStrip(
         accentColor = RadarAmber,
       )
     }
-    if (isSandboxMode) {
-      Surface(
-        modifier =
-          Modifier.clip(RoundedCornerShape(6.dp))
-            .clickable { onRandomizeSandbox() }
-            .testTag("randomize_sandbox_button"),
-        color = RadarBgElevated,
-        border = BorderStroke(1.dp, RadarOrange.copy(alpha = 0.7f)),
+    Surface(
+      modifier =
+        Modifier.clip(RoundedCornerShape(6.dp))
+          .clickable { onClearAndRescan() }
+          .testTag("clear_rescan_button"),
+      color = RadarBgElevated,
+      border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.7f)),
+    ) {
+      Row(
+        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
       ) {
-        Row(
-          modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Icon(
-            imageVector = Icons.Default.Refresh,
-            contentDescription = "Randomize sandbox coordinates",
-            tint = RadarOrange,
-            modifier = Modifier.size(12.dp),
-          )
-          Spacer(modifier = Modifier.width(4.dp))
-          Text(
-            text = "随机重置隐藏靶标坐标",
-            style = MaterialTheme.typography.labelSmall,
-            color = RadarOrange,
-          )
-        }
+        Icon(
+          imageVector = Icons.Default.Refresh,
+          contentDescription = "Clear and rescan BLE",
+          tint = RadarCyan,
+          modifier = Modifier.size(12.dp),
+        )
+        Spacer(modifier = Modifier.width(4.dp))
+        Text(
+          text = "清空缓存并重扫",
+          style = MaterialTheme.typography.labelSmall,
+          color = RadarCyan,
+        )
       }
     }
   }
@@ -415,7 +406,6 @@ private fun HardwareGuardCard(
 private fun LogarithmicSonarCard(
   devices: List<BleDeviceTelemetry>,
   lockedMac: String?,
-  isSandboxMode: Boolean,
 ) {
   val infiniteTransition = rememberInfiniteTransition(label = "sonarSweep")
   val sweepAngleDeg by
@@ -524,7 +514,6 @@ private fun LogarithmicSonarCard(
             when {
               dev.isSignalStale -> RadarCrimson
               isTarget -> RadarOrange
-              dev.isNlosOccluded -> RadarPurple
               else -> RadarCyan
             }
 
@@ -545,7 +534,7 @@ private fun LogarithmicSonarCard(
 
       Column(modifier = Modifier.align(Alignment.TopStart).padding(4.dp)) {
         Text(
-          text = if (isSandboxMode) "SONAR: 5Hz 物理多径沙盒" else "SONAR: BLE 硬件实时扫描",
+          text = "SONAR: 2.4GHz BLE 硬件实时扫描",
           style = MaterialTheme.typography.labelSmall,
           color = RadarCyan,
         )
@@ -629,20 +618,6 @@ private fun DeviceTelemetryCard(
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-          if (device.isNlosOccluded) {
-            Surface(
-              color = RadarPurple.copy(alpha = 0.2f),
-              shape = RoundedCornerShape(5.dp),
-              border = BorderStroke(1.dp, RadarPurple),
-            ) {
-              Text(
-                text = "NLOS -${device.wallLossDb.format1()}dB",
-                style = MaterialTheme.typography.labelSmall,
-                color = RadarPurple,
-                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
-              )
-            }
-          }
           if (device.isSignalStale) {
             Surface(
               color = RadarCrimson.copy(alpha = 0.2f),

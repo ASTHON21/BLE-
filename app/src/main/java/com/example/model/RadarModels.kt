@@ -29,22 +29,6 @@ data class OscilloscopeTrace(
   val lowerBandHistory: FloatArray = FloatArray(0),
 )
 
-data class WallObstacle(
-  val id: String,
-  val label: String,
-  val x1: Float,
-  val y1: Float,
-  val x2: Float,
-  val y2: Float,
-  val attenuationDb: Float,
-)
-
-enum class NlosScenarioPreset(val title: String, val subtitle: String) {
-  LOS_OPEN("LOS 视距实验室", "无墙体遮挡 (0 dB 穿墙损耗)"),
-  SINGLE_WALL("NLOS 单承重墙", "混凝土隔墙 (-6.5 dB 穿墙非视距)"),
-  MULTI_CORRIDOR("NLOS 多隔断走廊", "双隔墙+金属反射面 (-11.5 dB 复合损耗)"),
-}
-
 data class BleDeviceTelemetry(
   val macAddress: String,
   val deviceName: String,
@@ -59,12 +43,7 @@ data class BleDeviceTelemetry(
   val packetIntervalMs: Long,
   val lastSeenMs: Long,
   val isSignalStale: Boolean,
-  val isSimulated: Boolean = false,
-  val simTrueX: Float = 0f,
-  val simTrueY: Float = 0f,
   val sonarAngleRad: Float = 0f,
-  val isNlosOccluded: Boolean = false,
-  val wallLossDb: Float = 0f,
   val dissectedProtocol: DissectedBleProtocol? = null,
 )
 

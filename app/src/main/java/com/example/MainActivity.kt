@@ -17,18 +17,18 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Radar
-import androidx.compose.material.icons.filled.Science
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -38,6 +38,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.model.HardwareCapabilities
 import com.example.ui.BlackboxScreen
 import com.example.ui.ScannerScreen
 import com.example.ui.TrackerScreen
@@ -57,6 +59,7 @@ import com.example.ui.theme.RadarBgCard
 import com.example.ui.theme.RadarBgDeep
 import com.example.ui.theme.RadarBgSurface
 import com.example.ui.theme.RadarBorder
+import com.example.ui.theme.RadarCrimson
 import com.example.ui.theme.RadarCyan
 import com.example.ui.theme.RadarEmerald
 import com.example.ui.theme.RadarOrange
@@ -80,9 +83,6 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun BleParticleRadarApp(radarViewModel: RadarViewModel = viewModel()) {
   val activeTab by radarViewModel.activeTab.collectAsStateWithLifecycle()
-  val isSandboxMode by radarViewModel.isSandboxMode.collectAsStateWithLifecycle()
-  val nlosPreset by radarViewModel.nlosPreset.collectAsStateWithLifecycle()
-  val obstacles by radarViewModel.obstacles.collectAsStateWithLifecycle()
   val bodyShadowingEnabled by radarViewModel.bodyShadowingEnabled.collectAsStateWithLifecycle()
   val capabilities by radarViewModel.hardwareCapabilities.collectAsStateWithLifecycle()
   val devices by radarViewModel.devices.collectAsStateWithLifecycle()
@@ -103,6 +103,12 @@ fun BleParticleRadarApp(radarViewModel: RadarViewModel = viewModel()) {
       radarViewModel.refreshHardwareCapabilities()
     }
 
+  LaunchedEffect(Unit) {
+    if (!capabilities.hasScanPermission) {
+      permissionLauncher.launch(radarViewModel.requiredPermissions())
+    }
+  }
+
   val lockedDevice = devices.firstOrNull { it.macAddress == lockedMac } ?: devices.firstOrNull()
 
   Scaffold(
@@ -110,14 +116,10 @@ fun BleParticleRadarApp(radarViewModel: RadarViewModel = viewModel()) {
     containerColor = RadarBgDeep,
     contentWindowInsets = WindowInsets.safeDrawing,
     topBar = {
-      TopDualModeHeader(
-        isSandboxMode = isSandboxMode,
-        onToggleMode = { targetSandbox ->
-          radarViewModel.setSandboxMode(targetSandbox)
-          if (!targetSandbox && !capabilities.hasScanPermission) {
-            permissionLauncher.launch(radarViewModel.requiredPermissions())
-          }
-        },
+      TopHardwareTelemetryHeader(
+        capabilities = capabilities,
+        activeDeviceCount = devices.size,
+        onRescan = { radarViewModel.clearAndRescanDevices() },
       )
     },
     bottomBar = {
@@ -207,7 +209,6 @@ fun BleParticleRadarApp(radarViewModel: RadarViewModel = viewModel()) {
       when (activeTab) {
         RadarTab.SCANNER ->
           ScannerScreen(
-            isSandboxMode = isSandboxMode,
             capabilities = capabilities,
             devices = devices,
             lockedMac = lockedDevice?.macAddress,
@@ -216,14 +217,11 @@ fun BleParticleRadarApp(radarViewModel: RadarViewModel = viewModel()) {
               permissionLauncher.launch(radarViewModel.requiredPermissions())
             },
             onLockDevice = { mac -> radarViewModel.lockOnDevice(mac) },
-            onRandomizeSandbox = { radarViewModel.randomizeSandboxTargetPositions() },
+            onClearAndRescan = { radarViewModel.clearAndRescanDevices() },
           )
 
         RadarTab.TRACKER ->
           TrackerScreen(
-            isSandboxMode = isSandboxMode,
-            nlosPreset = nlosPreset,
-            obstacles = obstacles,
             bodyShadowingEnabled = bodyShadowingEnabled,
             lockedDevice = lockedDevice,
             pdrState = pdrState,
@@ -231,7 +229,6 @@ fun BleParticleRadarApp(radarViewModel: RadarViewModel = viewModel()) {
             defaultTxPower = defaultTxPower,
             basePathLossN = basePathLossN,
             geigerEnabled = geigerEnabled,
-            onSelectNlosPreset = { preset -> radarViewModel.selectNlosPreset(preset) },
             onToggleBodyShadowing = { enabled ->
               radarViewModel.setBodyShadowingEnabled(enabled)
             },
@@ -264,104 +261,100 @@ fun BleParticleRadarApp(radarViewModel: RadarViewModel = viewModel()) {
   }
 }
 
-/**
- * Contract 4: Sticky Top Dual-Mode Switcher [真机硬件雷达 / 物理仿真沙盒]
- */
 @Composable
-private fun TopDualModeHeader(
-  isSandboxMode: Boolean,
-  onToggleMode: (Boolean) -> Unit,
+private fun TopHardwareTelemetryHeader(
+  capabilities: HardwareCapabilities,
+  activeDeviceCount: Int,
+  onRescan: () -> Unit,
 ) {
+  val isHardwareReady = capabilities.hasScanPermission && capabilities.isBluetoothEnabled
   Surface(
     color = RadarBgSurface,
     border = BorderStroke(1.dp, RadarBorder),
     modifier = Modifier.fillMaxWidth(),
   ) {
-    Column(
+    Row(
       modifier =
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
+        Modifier.fillMaxWidth()
+          .statusBarsPadding()
+          .padding(horizontal = 12.dp, vertical = 10.dp),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically,
     ) {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Column(modifier = Modifier.weight(1f)) {
-          Text(
-            text = "BLE 空间概率粒子寻物雷达",
-            style = MaterialTheme.typography.headlineSmall,
-            color = RadarTextPrimary,
-          )
-          Text(
-            text = "L4+ 双峰破缺 · 人体遮挡 · 零GC双缓冲 · SoA N=2500",
-            style = MaterialTheme.typography.labelSmall,
-            color = RadarCyan,
-          )
-        }
+      Column(modifier = Modifier.weight(1f)) {
+        Text(
+          text = "BLE 空间概率粒子寻物雷达",
+          style = MaterialTheme.typography.headlineSmall,
+          color = RadarTextPrimary,
+        )
+        Text(
+          text = "L4+ 双峰破缺 · 人体遮挡 · 零GC双缓冲 · SoA N=2500",
+          style = MaterialTheme.typography.labelSmall,
+          color = RadarCyan,
+        )
       }
 
-      Spacer(modifier = Modifier.height(6.dp))
-
       Row(
-        modifier =
-          Modifier.fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(RadarBgCard)
-            .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        val sandboxSelected = isSandboxMode
-        Box(
-          modifier =
-            Modifier.weight(1f)
-              .clip(RoundedCornerShape(8.dp))
-              .background(if (sandboxSelected) RadarEmerald else Color.Transparent)
-              .clickable { onToggleMode(true) }
-              .padding(vertical = 8.dp)
-              .testTag("mode_sandbox_button"),
-          contentAlignment = Alignment.Center,
+        Surface(
+          color =
+            if (isHardwareReady) RadarEmerald.copy(alpha = 0.16f)
+            else RadarCrimson.copy(alpha = 0.18f),
+          shape = RoundedCornerShape(8.dp),
+          border =
+            BorderStroke(
+              1.dp,
+              if (isHardwareReady) RadarEmerald.copy(alpha = 0.65f) else RadarCrimson,
+            ),
         ) {
-          Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-              imageVector = Icons.Default.Science,
-              contentDescription = "物理仿真沙盒",
-              tint = if (sandboxSelected) Color.Black else RadarTextSecondary,
-              modifier = Modifier.size(16.dp),
+          Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Box(
+              modifier =
+                Modifier.size(7.dp)
+                  .clip(CircleShape)
+                  .background(if (isHardwareReady) RadarEmerald else RadarCrimson)
             )
             Spacer(modifier = Modifier.width(5.dp))
             Text(
-              text = "物理仿真沙盒 (5Hz+NLOS)",
-              style = MaterialTheme.typography.labelMedium,
-              color = if (sandboxSelected) Color.Black else RadarTextSecondary,
-              fontWeight = if (sandboxSelected) FontWeight.Bold else FontWeight.Medium,
+              text =
+                if (isHardwareReady) "2.4GHz 实时 (${activeDeviceCount})"
+                else "硬件待就绪",
+              style = MaterialTheme.typography.labelSmall,
+              color = if (isHardwareReady) RadarEmerald else RadarCrimson,
+              fontWeight = FontWeight.Bold,
             )
           }
         }
 
-        val hwSelected = !isSandboxMode
-        Box(
+        Surface(
           modifier =
-            Modifier.weight(1f)
-              .clip(RoundedCornerShape(8.dp))
-              .background(if (hwSelected) RadarCyan else Color.Transparent)
-              .clickable { onToggleMode(false) }
-              .padding(vertical = 8.dp)
-              .testTag("mode_hardware_button"),
-          contentAlignment = Alignment.Center,
+            Modifier.clip(RoundedCornerShape(8.dp))
+              .clickable { onRescan() }
+              .testTag("top_rescan_button"),
+          color = RadarBgCard,
+          border = BorderStroke(1.dp, RadarCyan.copy(alpha = 0.6f)),
         ) {
-          Row(verticalAlignment = Alignment.CenterVertically) {
+          Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
             Icon(
-              imageVector = Icons.Default.Bluetooth,
-              contentDescription = "真机硬件雷达",
-              tint = if (hwSelected) Color.Black else RadarTextSecondary,
-              modifier = Modifier.size(16.dp),
+              imageVector = Icons.Default.Refresh,
+              contentDescription = "重新扫描",
+              tint = RadarCyan,
+              modifier = Modifier.size(14.dp),
             )
-            Spacer(modifier = Modifier.width(5.dp))
+            Spacer(modifier = Modifier.width(4.dp))
             Text(
-              text = "真机硬件雷达 (BLE)",
-              style = MaterialTheme.typography.labelMedium,
-              color = if (hwSelected) Color.Black else RadarTextSecondary,
-              fontWeight = if (hwSelected) FontWeight.Bold else FontWeight.Medium,
+              text = "重扫",
+              style = MaterialTheme.typography.labelSmall,
+              color = RadarCyan,
+              fontWeight = FontWeight.Bold,
             )
           }
         }
